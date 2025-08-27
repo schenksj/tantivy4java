@@ -10,7 +10,7 @@ macro_rules! debug_log {
         }
     };
 }
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::ops::RangeInclusive;
 use std::io::Write;
@@ -25,14 +25,13 @@ use chrono::{DateTime, Utc};
 use uuid::Uuid;
 use serde::{Serialize, Deserialize};
 use serde_json;
-use base64::{Engine, engine::general_purpose};
 
 // Quickwit imports
-use quickwit_storage::{SplitPayloadBuilder, PutPayload, BundleStorage, RamStorage, Storage};
+use quickwit_storage::{PutPayload, BundleStorage, RamStorage, Storage};
 use quickwit_directories::write_hotcache;
-use tantivy::directory::{OwnedBytes, FileSlice};
+use tantivy::directory::OwnedBytes;
 
-use crate::utils::{convert_throwable, jstring_to_string, string_to_jstring, with_object};
+use crate::utils::{jstring_to_string, string_to_jstring, convert_throwable};
 
 /// Configuration for split conversion passed from Java
 #[derive(Debug)]
@@ -45,7 +44,6 @@ struct SplitConfig {
     time_range_start: Option<DateTime<Utc>>,
     time_range_end: Option<DateTime<Utc>>,
     tags: BTreeSet<String>,
-    metadata: HashMap<String, String>,
 }
 
 /// Split metadata structure compatible with Quickwit format
@@ -99,7 +97,6 @@ impl SplitConfig {
         let time_range_start = None;
         let time_range_end = None;
         let tags = BTreeSet::new();
-        let metadata = HashMap::new();
 
         Ok(SplitConfig {
             index_uid,
@@ -110,7 +107,6 @@ impl SplitConfig {
             time_range_start,
             time_range_end,
             tags,
-            metadata,
         })
     }
 }
@@ -181,70 +177,6 @@ fn create_java_split_metadata<'a>(env: &mut JNIEnv<'a>, split_metadata: &Quickwi
     Ok(metadata_obj)
 }
 
-fn convert_tantivy_to_split(
-    tantivy_index: tantivy::Index,
-    output_path: &Path,
-    config: SplitConfig,
-) -> Result<QuickwitSplitMetadata> {
-    
-    // Get index statistics
-    let searcher = tantivy_index.reader()?.searcher();
-    let num_docs = searcher.num_docs();
-    
-    // Calculate actual uncompressed size by examining index files
-    let uncompressed_docs_size = (num_docs as u64) * 1024; // Basic estimate based on doc count
-    
-    // Create split metadata  
-    let split_metadata = create_split_metadata(&config, num_docs as usize, uncompressed_docs_size);
-    
-    // Create a working split file that contains:
-    // 1. Split metadata in JSON format
-    // 2. Index directory structure information
-    // 3. Placeholder for actual Tantivy index data
-    
-    let mut split_content = Vec::new();
-    
-    // Header with version
-    split_content.extend_from_slice(b"QUICKWIT_SPLIT_V1\n");
-    
-    // Add metadata section
-    let metadata_json = serde_json::to_string_pretty(&split_metadata)?;
-    split_content.extend_from_slice(b"METADATA_START\n");
-    split_content.extend_from_slice(metadata_json.as_bytes());
-    split_content.extend_from_slice(b"\nMETADATA_END\n");
-    
-    // Add index info section
-    split_content.extend_from_slice(b"INDEX_INFO_START\n");
-    let index_info = format!(
-        "num_docs: {}\nuncompressed_size: {}\n",
-        num_docs, uncompressed_docs_size
-    );
-    split_content.extend_from_slice(index_info.as_bytes());
-    split_content.extend_from_slice(b"INDEX_INFO_END\n");
-    
-    // Use Quickwit's SplitPayloadBuilder to create a real split bundle
-    // Create a runtime for async operations
-    let runtime = tokio::runtime::Runtime::new()
-        .map_err(|e| anyhow::anyhow!("Failed to create tokio runtime: {}", e))?;
-    
-    // Unfortunately, we cannot reliably extract the directory path from a Tantivy Index object
-    // because MmapDirectory's path field is private and there's no public accessor.
-    // The Index object abstracts away the underlying directory implementation details.
-    
-    debug_log!("Cannot extract directory path from Index object - path is not publicly accessible");
-    
-    return Err(anyhow::anyhow!(
-        "Converting from Index object is not currently supported due to Tantivy API limitations. \
-        The directory path cannot be extracted from the Index object. \
-        Please use QuickwitSplit.convertIndexFromPath(indexPath, outputPath, config) instead, \
-        where you provide the directory path directly. \
-        \
-        Example: \
-        QuickwitSplit.convertIndexFromPath(\"/path/to/index\", \"/path/to/output.split\", config) \
-        \
-        This method works correctly and creates proper Quickwit split files."
-    ));
-}
 
 fn convert_index_from_path_impl(index_path: &str, output_path: &str, config: &SplitConfig) -> Result<QuickwitSplitMetadata, anyhow::Error> {
     use tantivy::directory::MmapDirectory;
@@ -294,7 +226,6 @@ fn create_quickwit_split(
     _split_metadata: &QuickwitSplitMetadata
 ) -> Result<(), anyhow::Error> {
     use quickwit_storage::SplitPayloadBuilder;
-    use std::path::PathBuf;
     
     debug_log!("create_quickwit_split called with output_path: {:?}", output_path);
     
@@ -329,7 +260,7 @@ fn create_quickwit_split(
             .map_err(|e| anyhow::anyhow!("Failed to create reader for field metadata extraction: {}", e))?
             .searcher();
         
-        let segment_ids: Vec<_> = searcher.segment_readers().iter().map(|sr| sr.segment_id()).collect();
+        let _segment_ids: Vec<_> = searcher.segment_readers().iter().map(|sr| sr.segment_id()).collect();
         let mut all_field_metadata = Vec::new();
         
         // Collect field metadata from all segments
@@ -666,7 +597,6 @@ struct MergeConfig {
     node_id: String,
     doc_mapping_uid: String,
     partition_id: u64,
-    delete_queries: Option<Vec<String>>,
 }
 
 #[no_mangle]
@@ -716,19 +646,6 @@ fn extract_merge_config(env: &mut JNIEnv, config_obj: &JObject) -> Result<MergeC
     let partition_id = env.call_method(config_obj, "getPartitionId", "()J", &[])?
         .j()? as u64;
     
-    // Get delete queries (optional)
-    let delete_queries_result = env.call_method(config_obj, "getDeleteQueries", "()Ljava/util/List;", &[]);
-    let delete_queries = match delete_queries_result {
-        Ok(list_val) => {
-            let list_obj = list_val.l()?;
-            if list_obj.is_null() {
-                None
-            } else {
-                Some(extract_string_list_from_jobject(env, &list_obj)?)
-            }
-        }
-        Err(_) => None,
-    };
     
     Ok(MergeConfig {
         index_uid,
@@ -736,7 +653,6 @@ fn extract_merge_config(env: &mut JNIEnv, config_obj: &JObject) -> Result<MergeC
         node_id,
         doc_mapping_uid,
         partition_id,
-        delete_queries,
     })
 }
 
@@ -764,7 +680,7 @@ fn get_string_field_value(env: &mut JNIEnv, obj: &JObject, method_name: &str) ->
 
 /// Extract split file contents to a directory (avoiding read-only BundleDirectory issues)
 fn extract_split_to_directory_impl(split_path: &Path, output_dir: &Path) -> Result<()> {
-    use tantivy::directory::{MmapDirectory, DirectoryClone};
+    use tantivy::directory::MmapDirectory;
     
     debug_log!("Extracting split {:?} to directory {:?}", split_path, output_dir);
     
@@ -829,7 +745,6 @@ fn merge_splits_impl(split_urls: &[String], output_path: &str, config: &MergeCon
     use quickwit_directories::UnionDirectory;
     use tantivy::directory::{MmapDirectory, Directory, Advice, DirectoryClone};
     use tantivy::{Index as TantivyIndex, IndexMeta};
-    use tantivy::index::SegmentId;
     
     debug_log!("Implementing split merge using Quickwit's efficient approach for {} splits", split_urls.len());
     
@@ -997,7 +912,6 @@ fn get_tantivy_directory_from_split_bundle(split_path: &str) -> Result<Box<dyn t
 
 /// Combine multiple index metadata using Quickwit's approach
 fn combine_index_meta(mut index_metas: Vec<tantivy::IndexMeta>) -> Result<tantivy::IndexMeta> {
-    use tantivy::IndexMeta;
     
     debug_log!("Combining {} index metadata objects", index_metas.len());
     

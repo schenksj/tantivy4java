@@ -20,7 +20,7 @@
 use jni::objects::{JClass, JString, JObject};
 use jni::sys::{jlong, jboolean, jint, jdouble, jlongArray, jobject};
 use jni::JNIEnv;
-use tantivy::query::{Query as TantivyQuery, TermQuery, AllQuery, BooleanQuery, Occur, RangeQuery, PhraseQuery, FuzzyTermQuery, RegexQuery, BoostQuery, ConstScoreQuery, TermSetQuery};
+use tantivy::query::{Query as TantivyQuery, TermQuery, AllQuery, BooleanQuery, Occur, RangeQuery, PhraseQuery, FuzzyTermQuery, RegexQuery, BoostQuery, ConstScoreQuery};
 use tantivy::schema::{Schema, Term, IndexRecordOption, FieldType as TantivyFieldType, Field};
 use tantivy::DateTime;
 use std::ops::Bound;
@@ -76,7 +76,7 @@ pub extern "system" fn Java_com_tantivy4java_Query_nativeTermQuery(
                 };
                 
                 // For text fields that are indexed, use tokenization to match how the index was created
-                if let Some(text_field_indexing) = &text_options.get_indexing_options() {
+                if let Some(_text_field_indexing) = &text_options.get_indexing_options() {
                     // Use the same tokenizer that was used during indexing
                     // For simplicity, we'll lowercase the term (which is what the default tokenizer does)
                     let tokenized_term = field_value_str.to_lowercase();
@@ -275,7 +275,7 @@ pub extern "system" fn Java_com_tantivy4java_Query_nativeFuzzyTermQuery(
     text: JString,
     distance: jint,
     transposition_cost_one: jboolean,
-    prefix: jboolean,
+    _prefix: jboolean,
 ) -> jlong {
     let field_name_str: String = match env.get_string(&field_name) {
         Ok(s) => s.into(),
@@ -828,7 +828,7 @@ fn wildcard_to_regex_preserve_case(pattern: &str) -> String {
 
 /// Create a tokenized wildcard query for patterns containing spaces
 /// Tokenizes the pattern and creates a boolean AND query of individual wildcard/term queries
-fn create_tokenized_wildcard_query(schema: &Schema, field: Field, pattern: &str) -> Result<Box<dyn TantivyQuery>, String> {
+fn create_tokenized_wildcard_query(_schema: &Schema, field: Field, pattern: &str) -> Result<Box<dyn TantivyQuery>, String> {
     // Simple tokenization by splitting on whitespace
     let tokens: Vec<&str> = pattern.split_whitespace().collect();
     
@@ -1719,12 +1719,12 @@ fn extract_term_set_values(
 pub extern "system" fn Java_com_tantivy4java_SnippetGenerator_nativeCreate(
     mut env: JNIEnv,
     _class: JClass,
-    searcher_ptr: jlong,
-    query_ptr: jlong,
-    schema_ptr: jlong,
+    _searcher_ptr: jlong,
+    _query_ptr: jlong,
+    _schema_ptr: jlong,
     field_name: JString,
 ) -> jlong {
-    let field_name_str: String = match env.get_string(&field_name) {
+    let _field_name_str: String = match env.get_string(&field_name) {
         Ok(s) => s.into(),
         Err(_) => {
             handle_error(&mut env, "Invalid field name");
@@ -1740,10 +1740,10 @@ pub extern "system" fn Java_com_tantivy4java_SnippetGenerator_nativeCreate(
 
 #[no_mangle]
 pub extern "system" fn Java_com_tantivy4java_SnippetGenerator_nativeSnippetFromDoc(
-    mut env: JNIEnv,
+    mut _env: JNIEnv,
     _class: JClass,
-    snippet_generator_ptr: jlong,
-    doc_ptr: jlong,
+    _snippet_generator_ptr: jlong,
+    _doc_ptr: jlong,
 ) -> jlong {
     // Return a valid stub pointer for Snippet
     let stub_snippet = Box::new(2u64); // Simple stub object
@@ -1752,10 +1752,10 @@ pub extern "system" fn Java_com_tantivy4java_SnippetGenerator_nativeSnippetFromD
 
 #[no_mangle]
 pub extern "system" fn Java_com_tantivy4java_SnippetGenerator_nativeSetMaxNumChars(
-    mut env: JNIEnv,
+    mut _env: JNIEnv,
     _class: JClass,
-    snippet_generator_ptr: jlong,
-    max_num_chars: jint,
+    _snippet_generator_ptr: jlong,
+    _max_num_chars: jint,
 ) {
     // Stub implementation - do nothing but don't error
 }
@@ -1774,7 +1774,7 @@ pub extern "system" fn Java_com_tantivy4java_SnippetGenerator_nativeClose(
 pub extern "system" fn Java_com_tantivy4java_Snippet_nativeToHtml(
     mut env: JNIEnv,
     _class: JClass,
-    snippet_ptr: jlong,
+    _snippet_ptr: jlong,
 ) -> jobject {
     // Return a stub HTML string with basic highlighting
     let stub_html = "<b>sample</b> highlighted text";
@@ -1791,7 +1791,7 @@ pub extern "system" fn Java_com_tantivy4java_Snippet_nativeToHtml(
 pub extern "system" fn Java_com_tantivy4java_Snippet_nativeGetFragment(
     mut env: JNIEnv,
     _class: JClass,
-    snippet_ptr: jlong,
+    _snippet_ptr: jlong,
 ) -> jobject {
     // Return a stub fragment string
     let stub_fragment = "sample highlighted text";
@@ -1808,7 +1808,7 @@ pub extern "system" fn Java_com_tantivy4java_Snippet_nativeGetFragment(
 pub extern "system" fn Java_com_tantivy4java_Snippet_nativeGetHighlighted(
     mut env: JNIEnv,
     _class: JClass,
-    snippet_ptr: jlong,
+    _snippet_ptr: jlong,
 ) -> jobject {
     // Return an ArrayList with a stub Range
     match env.find_class("java/util/ArrayList") {
@@ -1859,7 +1859,7 @@ pub extern "system" fn Java_com_tantivy4java_Snippet_nativeClose(
 // Range JNI methods
 #[no_mangle]
 pub extern "system" fn Java_com_tantivy4java_Range_nativeGetStart(
-    mut env: JNIEnv,
+    _env: JNIEnv,
     _class: JClass,
     range_ptr: jlong,
 ) -> jint {
@@ -1872,7 +1872,7 @@ pub extern "system" fn Java_com_tantivy4java_Range_nativeGetStart(
 
 #[no_mangle]
 pub extern "system" fn Java_com_tantivy4java_Range_nativeGetEnd(
-    mut env: JNIEnv,
+    _env: JNIEnv,
     _class: JClass,
     range_ptr: jlong,
 ) -> jint {

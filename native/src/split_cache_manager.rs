@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use jni::JNIEnv;
-use jni::objects::{JClass, JObject, JString, JValue};
+use jni::objects::{JClass, JObject, JString};
 use jni::sys::{jlong, jint, jobject};
 
 use quickwit_storage::{ByteRangeCache, SplitCache};
@@ -325,7 +325,7 @@ pub extern "system" fn Java_com_tantivy4java_SplitCacheManager_searchAcrossAllSp
     
     // Safely access through global registry instead of unsafe pointer cast
     let managers = CACHE_MANAGERS.lock().unwrap();
-    let manager = match managers.values().find(|m| Arc::as_ptr(m) as jlong == ptr) {
+    let _manager = match managers.values().find(|m| Arc::as_ptr(m) as jlong == ptr) {
         Some(manager_arc) => manager_arc,
         None => {
             let _ = env.throw_new("java/lang/RuntimeException", "SplitCacheManager not found in registry");
@@ -355,7 +355,7 @@ pub extern "system" fn Java_com_tantivy4java_SplitCacheManager_searchAcrossSplit
     
     // Safely access through global registry instead of unsafe pointer cast
     let managers = CACHE_MANAGERS.lock().unwrap();
-    let manager = match managers.values().find(|m| Arc::as_ptr(m) as jlong == ptr) {
+    let _manager = match managers.values().find(|m| Arc::as_ptr(m) as jlong == ptr) {
         Some(manager_arc) => manager_arc,
         None => {
             let _ = env.throw_new("java/lang/RuntimeException", "SplitCacheManager not found in registry");

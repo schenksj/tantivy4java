@@ -11,15 +11,14 @@ macro_rules! debug_log {
     };
 }
 use jni::objects::{JClass, JObject, JString};
-use jni::sys::{jlong, jboolean, jobject, jint, jfloat};
+use jni::sys::{jlong, jboolean, jobject, jint};
 use jni::JNIEnv;
 use tokio::runtime::Runtime;
 use serde_json;
 
 use quickwit_storage::{
     Storage, StorageResolver, LocalFileStorageFactory, S3CompatibleObjectStorageFactory,
-    ByteRangeCache, BundleStorage, OwnedBytes, wrap_storage_with_cache,
-    QuickwitCache
+    ByteRangeCache, BundleStorage, OwnedBytes
 };
 use quickwit_proto::search::SplitIdAndFooterOffsets;
 use quickwit_config::S3StorageConfig;
@@ -56,7 +55,6 @@ pub struct SplitSearcher {
     runtime: Runtime,
     split_path: String,
     storage: Arc<dyn Storage>,
-    byte_range_cache: ByteRangeCache,
     // Real Quickwit components
     index: Index,
     reader: IndexReader,
@@ -65,7 +63,6 @@ pub struct SplitSearcher {
     hot_directory: Option<HotDirectory>,
     // Cache statistics tracking
     cache_hits: std::sync::atomic::AtomicU64,
-    cache_misses: std::sync::atomic::AtomicU64,
     cache_evictions: std::sync::atomic::AtomicU64,
 }
 
@@ -156,18 +153,17 @@ impl SplitSearcher {
             runtime,
             split_path: config.split_path,
             storage: cached_storage,
-            cache: byte_range_cache.clone(),
-            byte_range_cache,
+            cache: byte_range_cache,
             index,
             reader,
             hot_directory: Some(hot_directory),
             cache_hits: std::sync::atomic::AtomicU64::new(0),
-            cache_misses: std::sync::atomic::AtomicU64::new(0),
             cache_evictions: std::sync::atomic::AtomicU64::new(0),
         })
     }
     
     /// Open a split file following Quickwit's open_index_with_caches pattern
+    #[allow(dead_code)]
     async fn open_split_index_quickwit_style(
         &self,
         storage: Arc<dyn Storage>, 
@@ -278,6 +274,7 @@ impl SplitSearcher {
     }
 
     /// Quickwit-style open_split_bundle implementation (static method)
+    #[allow(dead_code)]
     async fn quickwit_open_split_bundle_static(
         index_storage: Arc<dyn Storage>,
         split_and_footer_offsets: &SplitIdAndFooterOffsets,
@@ -301,6 +298,7 @@ impl SplitSearcher {
     }
 
     /// Get split footer data from storage (following Quickwit's get_split_footer_from_cache_or_fetch) (static method)
+    #[allow(dead_code)]
     async fn get_split_footer_from_storage_static(
         index_storage: Arc<dyn Storage>,
         split_and_footer_offsets: &SplitIdAndFooterOffsets,
@@ -598,10 +596,9 @@ impl SplitSearcher {
         debug_log!("Executing query: {:?}", query);
         
         // Debug: Extract term from query to see what we're actually searching for
-        if let Ok(query_str) = format!("{:?}", query).parse::<String>() {
-            if query_str.contains("TermQuery") {
-                debug_log!("This is a term query - checking what term is being searched");
-            }
+        let query_str = format!("{:?}", query);
+        if query_str.contains("TermQuery") {
+            debug_log!("This is a term query - checking what term is being searched");
         }
         
         // Debug: Check if term dictionary is accessible for any text field
@@ -804,56 +801,6 @@ pub struct SearchHit {
 // JNI function implementations
 // Legacy createNative method removed - all SplitSearcher instances now use shared cache
 
-fn extract_aws_config(env: &mut JNIEnv, aws_obj: JObject) -> anyhow::Result<AwsConfig> {
-    let access_key = get_string_field(env, &aws_obj, "getAccessKey")?;
-    let secret_key = get_string_field(env, &aws_obj, "getSecretKey")?; 
-    let region = get_string_field(env, &aws_obj, "getRegion")?;
-    
-    // Extract session token (optional - for STS/temporary credentials)
-    let session_token = match env.call_method(&aws_obj, "getSessionToken", "()Ljava/lang/String;", &[]) {
-        Ok(session_result) => {
-            let session_obj = session_result.l()?;
-            if env.is_same_object(&session_obj, JObject::null())? {
-                None
-            } else {
-                Some(env.get_string((&session_obj).into())?.into())
-            }
-        },
-        Err(_) => None, // Method doesn't exist or returned null
-    };
-    
-    let endpoint = match env.call_method(&aws_obj, "getEndpoint", "()Ljava/lang/String;", &[]) {
-        Ok(endpoint_result) => {
-            let endpoint_obj = endpoint_result.l()?;
-            if env.is_same_object(&endpoint_obj, JObject::null())? {
-                None
-            } else {
-                Some(env.get_string((&endpoint_obj).into())?.into())
-            }
-        },
-        Err(_) => None,
-    };
-    
-    let force_path_style = env.call_method(&aws_obj, "isForcePathStyle", "()Z", &[])?
-        .z()?;
-
-    Ok(AwsConfig {
-        access_key,
-        secret_key,
-        session_token,
-        region,
-        endpoint,
-        force_path_style,
-    })
-}
-
-fn get_string_field(env: &mut JNIEnv, obj: &JObject, method_name: &str) -> anyhow::Result<String> {
-    let result = env.call_method(obj, method_name, "()Ljava/lang/String;", &[])?;
-    let string_obj = result.l()?;
-    let java_string = JString::from(string_obj);
-    let rust_string = env.get_string(&java_string)?.into();
-    Ok(rust_string)
-}
 
 fn extract_aws_config_from_java_map(env: &mut JNIEnv, split_config: &JObject) -> anyhow::Result<Option<AwsConfig>> {
     // Check if split_config is null/empty
@@ -1186,7 +1133,6 @@ pub extern "system" fn Java_com_tantivy4java_SplitSearcher_getSchemaFromNative(
     _class: JClass,
     ptr: jlong,
 ) -> jlong {
-    use crate::utils::convert_throwable;
     
     if ptr == 0 {
         let _ = env.throw_new("java/lang/RuntimeException", "Invalid SplitSearcher pointer");
@@ -1602,28 +1548,6 @@ fn create_boolean_object<'a>(env: &mut JNIEnv<'a>, value: bool) -> anyhow::Resul
     Ok(boolean_obj)
 }
 
-fn create_component_status_object<'a>(
-    env: &mut JNIEnv<'a>,
-    status: ComponentCacheStatus,
-) -> anyhow::Result<JObject<'a>> {
-    let class = env.find_class("com/tantivy4java/ComponentCacheStatus")?;
-    
-    let timestamp = status.last_access_time
-        .duration_since(std::time::UNIX_EPOCH)?
-        .as_millis() as jlong;
-    
-    let obj = env.new_object(
-        class,
-        "(ZJJ)V",
-        &[
-            (status.is_cached as jboolean).into(),
-            timestamp.into(),
-            (status.size_bytes as jlong).into(),
-        ],
-    )?;
-    
-    Ok(obj)
-}
 
 fn create_search_result_object(env: &mut JNIEnv, result: SearchResult) -> jobject {
     // Convert SearchResult to the format expected by nativeGetHits: Vec<(f32, tantivy::DocAddress)>
@@ -1649,56 +1573,6 @@ fn create_search_result_object(env: &mut JNIEnv, result: SearchResult) -> jobjec
     }
 }
 
-fn create_search_hits_array(env: &mut JNIEnv, hits: Vec<SearchHit>) -> jobject {
-    match env.find_class("com/tantivy4java/SearchHit") {
-        Ok(hit_class) => {
-            match env.new_object_array(hits.len() as i32, hit_class, JObject::null()) {
-                Ok(array) => {
-                    for (i, hit) in hits.iter().enumerate() {
-                        if let Ok(hit_obj) = create_search_hit_object(env, hit) {
-                            let _ = env.set_object_array_element(&array, i as i32, &hit_obj);
-                        }
-                    }
-                    array.as_raw()
-                }
-                Err(_) => std::ptr::null_mut(),
-            }
-        }
-        Err(_) => std::ptr::null_mut(),
-    }
-}
-
-fn create_search_hit_object<'a>(env: &mut JNIEnv<'a>, hit: &SearchHit) -> anyhow::Result<JObject<'a>> {
-    let class = env.find_class("com/tantivy4java/SearchHit")?;
-    
-    // Create DocAddress object
-    let doc_address_class = env.find_class("com/tantivy4java/DocAddress")?;
-    let doc_address_obj = env.new_object(
-        doc_address_class,
-        "(II)V",
-        &[
-            (hit.doc_address.segment_ord as jint).into(),
-            (hit.doc_address.doc_id as jint).into(),
-        ],
-    )?;
-    
-    // For now, create a simplified document representation
-    let doc_json = format!("{{\"doc_id\": {}, \"segment\": {}}}", 
-                          hit.doc_address.doc_id, hit.doc_address.segment_ord);
-    let doc_string = env.new_string(&doc_json)?;
-    
-    let obj = env.new_object(
-        class,
-        "(FLcom/tantivy4java/DocAddress;Ljava/lang/String;)V",
-        &[
-            (hit.score as jfloat).into(),
-            (&doc_address_obj).into(),
-            (&doc_string).into(),
-        ],
-    )?;
-    
-    Ok(obj)
-}
 
 /// Create storage resolver with default config - used by cache manager
 pub fn create_storage_resolver() -> StorageResolver {
@@ -1739,93 +1613,3 @@ async fn open_split_bundle_cloud(
     Ok((hotcache_bytes, bundle_storage))
 }
 
-/// Open a split using Quickwit's real approach with proper caching layers
-async fn open_split_index_standalone(
-    storage: Arc<dyn Storage>,
-    split_path: &str,
-    byte_range_cache: &ByteRangeCache,
-    _runtime: &Runtime,
-) -> anyhow::Result<(Index, IndexReader)> {
-    // Parse the split URI to determine the type
-    let split_uri = Uri::from_str(split_path)?;
-    
-    let index = match split_uri.protocol() {
-        Protocol::File => {
-            // For local files, use real Quickwit BundleStorage approach with proper caching
-            if let Some(file_path) = split_uri.filepath() {
-                if !file_path.exists() {
-                    return Err(anyhow::anyhow!("Split file does not exist: {:?}", file_path));
-                }
-                
-                // Read the split file data
-                let split_data = std::fs::read(file_path)
-                    .map_err(|e| anyhow::anyhow!("Failed to read split file {:?}: {}", file_path, e))?;
-                
-                // Use real Quickwit BundleStorage opening
-                let (hotcache_bytes, bundle_storage) = BundleStorage::open_from_split_data_with_owned_bytes(
-                    storage.clone(),
-                    file_path.to_path_buf(),
-                    quickwit_storage::OwnedBytes::new(split_data),
-                )?;
-                
-                // Create StorageDirectory with BundleStorage (this is critical for correct search behavior)
-                let directory = StorageDirectory::new(Arc::new(bundle_storage));
-                
-                // Add the important caching layer that Quickwit uses
-                use quickwit_directories::CachingDirectory;
-                let caching_directory = CachingDirectory::new(Arc::new(directory), byte_range_cache.clone());
-                
-                // Use HotDirectory with proper hotcache like Quickwit does
-                use quickwit_directories::HotDirectory;
-                let hot_directory = HotDirectory::open(caching_directory, hotcache_bytes.read_bytes()?)?;
-                
-                Index::open(hot_directory)?
-            } else {
-                return Err(anyhow::anyhow!("Invalid file URI: {}", split_path));
-            }
-        },
-        Protocol::S3 | Protocol::Google | Protocol::Azure => {
-            // For cloud storage, use the real Quickwit async approach with caching
-            let (hotcache_bytes, bundle_storage) = {
-                // Get the split file name from the path
-                let split_file = PathBuf::from(format!("{}.split", 
-                    split_path.split('/').last().unwrap_or("unknown").replace(".split", "")
-                ));
-                
-                // Create minimal SplitIdAndFooterOffsets (would come from metastore in real usage)
-                let split_and_footer_offsets = SplitIdAndFooterOffsets {
-                    split_id: split_file.file_stem().unwrap().to_string_lossy().to_string(),
-                    split_footer_start: 0, // Would be provided by metastore
-                    split_footer_end: 0,   // Would be provided by metastore
-                    num_docs: 0,           // Would be provided by metastore
-                    timestamp_start: None,
-                    timestamp_end: None,
-                };
-                
-                // Open using cloud storage approach
-                open_split_bundle_cloud(storage.clone(), &split_and_footer_offsets).await?
-            };
-            
-            // Apply the same caching layers that Quickwit uses for cloud storage
-            let directory = StorageDirectory::new(Arc::new(bundle_storage));
-            use quickwit_directories::CachingDirectory;
-            let caching_directory = CachingDirectory::new(Arc::new(directory), byte_range_cache.clone());
-            
-            // Use HotDirectory with hotcache
-            use quickwit_directories::HotDirectory;
-            let hot_directory = HotDirectory::open(caching_directory, hotcache_bytes.read_bytes()?)?;
-            
-            Index::open(hot_directory)?
-        },
-        protocol => {
-            return Err(anyhow::anyhow!("Unsupported URI protocol '{}' for split file: {}. Supported: file, s3, gs, azure", protocol, split_path));
-        }
-    };
-    
-    // Create IndexReader with proper reload policy like Quickwit
-    let reader = index.reader_builder()
-        .reload_policy(tantivy::ReloadPolicy::OnCommitWithDelay)
-        .try_into()?;
-        
-    Ok((index, reader))
-}
